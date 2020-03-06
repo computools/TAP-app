@@ -1,0 +1,371 @@
+import React, { Component } from 'react';
+import { connect } from 'react-redux';
+import PropTypes from 'prop-types';
+import DeviceInfo from 'react-native-device-info';
+import { View } from 'react-native';
+import isEqual from 'lodash.isequal';
+import Header from '../../components/ui/DefaultHeader';
+import { OrderList } from '../../components/OrderList';
+import TableModal from '../../components/Modals/ChooseTable';
+import {
+  updateAction,
+  getTablesAction,
+  makeOrderAction,
+  updateTableAction,
+  clearAction,
+  venueStatusAction,
+} from '../../store/actions';
+import { AddNoteModal } from '../../components/Modals/AddNoteModal';
+import LoadingModal from '../../components/ui/LoadingModal';
+import BottomMenu from './BottomMenu';
+import { Description } from '../../components/NestedCategory/CategoryItem';
+import EmptyBucket from './EmptyBucket';
+
+import { DropDownHolder } from '../../utils/Alert';
+
+const INITIAL_SELETED_TABLE = {
+  currentCheckedTable: -1,
+  currentTableName: '',
+  isEditable: false,
+  editProductId: -1,
+};
+export class BucketScreen extends Component {
+  static propTypes = {
+    navigation: PropTypes.object,
+    bucketInfo: PropTypes.object,
+    updateBucket: PropTypes.func,
+    getTables: PropTypes.func,
+    clearBucket: PropTypes.func,
+    checkVenueOpening: PropTypes.func,
+    updateTable: PropTypes.func,
+    bucket: PropTypes.array,
+    tables: PropTypes.array,
+    isRequested: PropTypes.bool,
+    isChanged: PropTypes.bool,
+    isSuccess: PropTypes.bool,
+    isReorder: PropTypes.bool,
+    isBucketReq: PropTypes.bool,
+    vendorId: PropTypes.string,
+    barName: PropTypes.string,
+    symbol: PropTypes.string,
+  };
+
+  state = {
+    tableModal: true,
+    clearBucketModal: false,
+    addNoteModal: false,
+    productNote: '',
+    bucketItems: [],
+    totalOrderPrice: 0,
+    tables: [],
+    isScreenFocuse: false,
+    ...INITIAL_SELETED_TABLE,
+  };
+
+  componentDidMount = () => {
+    const { updateBucket } = this.props;
+    updateBucket({ isError: false, isSuccess: false, device_id: DeviceInfo.getUniqueID() });
+    this.subs = [
+      this.props.navigation.addListener('willFocus', () => this.getBucketItems()),
+      this.props.navigation.addListener('willBlur', () => this.syncBucket()),
+    ];
+  };
+
+  componentDidUpdate = (prevProps) => {
+    const { isChanged } = this.props;
+    if (!isEqual(prevProps.bucket, this.props.bucket) && isChanged) {
+      this.getBucketItems();
+
+      DropDownHolder.getDropDown().alertWithType(
+        'info',
+        'Info',
+        'Prices have been updated or items removed because of stock changes',
+      );
+    }
+  };
+
+  componentWillUnmount = () => {
+    this.subs.forEach((sub) => {
+      sub.remove();
+    });
+  };
+
+  onEdit = () => {
+    this.setState(({ isEditable }) => ({ isEditable: !isEditable }));
+  };
+
+  tableCheckHandler = (optionKey, tableName) => {
+    const { currentCheckedTable } = this.state;
+    const isChecked = currentCheckedTable === optionKey;
+
+    this.setState({
+      currentCheckedTable: isChecked ? -1 : optionKey,
+      currentTableName: tableName,
+    });
+  };
+
+  getTableItems = () => {
+    const { vendorId, getTables } = this.props;
+    getTables(vendorId);
+  };
+
+  chooseTableHandler = () => {
+    this.getTableItems();
+    this.setState({ tableModal: true });
+  };
+
+  updateBucket = (bucketArr) => {
+    const { updateBucket, clearBucket } = this.props;
+    const { bucketItems } = this.state;
+    const listOfProducts = Object.values(bucketArr || bucketItems);
+    if (listOfProducts.length !== 0) {
+      updateBucket({
+        listOfProducts,
+        isChanged: false,
+      });
+    } else {
+      clearBucket();
+    }
+  };
+
+  syncBucket = () => {
+    this.setState({ ...INITIAL_SELETED_TABLE, isScreenFocuse: false });
+    this.updateBucket();
+  };
+
+
+  getBucketItems = () => {
+    const {
+      bucket,
+      checkVenueOpening,
+      bucketInfo: { sourceId },
+    } = this.props;
+    if (bucket.length !== 0) {
+      checkVenueOpening(sourceId);
+      let totalPrice = 0;
+      const bucketItems = bucket.reduce((acc, curVal, index) => {
+        totalPrice = (+totalPrice + +curVal.totalPrice).toFixed(2);
+        return {
+          ...acc,
+          [index]: {
+            ...curVal,
+          },
+        };
+      }, {});
+      this.setState({
+        ...this.state,
+        bucketItems,
+        totalOrderPrice: totalPrice,
+      });
+    } else {
+      this.setState({ bucketItems: [], totalOrderPrice: [] });
+    }
+  };
+
+  updateStateByIndex = (index, obj) => {
+    const { bucketItems } = this.state;
+    const updatedArray = {
+      bucketItems: {
+        ...bucketItems,
+        [index]: {
+          ...bucketItems[index],
+          ...obj,
+        },
+      },
+    };
+    return updatedArray;
+  };
+
+  showAddNoteModal = () => {};
+
+  onShowEditModal = (index) => {
+    this.setState({ addNoteModal: true, editProductId: index });
+  };
+
+  onAddNoteHandler = (note) => {
+    this.setState({ addNoteModal: false });
+    const { editProductId } = this.state;
+    const { updateBucket } = this.props;
+    const updatedBucketArr = this.updateStateByIndex(editProductId, { note });
+    this.setState({ ...updatedBucketArr });
+    updateBucket({ listOfProducts: Object.values(updatedBucketArr.bucketItems) });
+  };
+
+  itemCounterHandler = (singleProdPrice, prevPrice, index) => (op) => {
+    const { totalCount } = this.state.bucketItems[index];
+    let { totalOrderPrice } = this.state;
+    const newCount = op === '+' ? totalCount + 1 : totalCount - 1;
+    const productPrice = Number.parseFloat(+singleProdPrice * +newCount).toFixed(2);
+    totalOrderPrice = Number.parseFloat(+totalOrderPrice - +prevPrice + +productPrice).toFixed(2);
+    const updatedBucketArr = this.updateStateByIndex(index, { totalCount: newCount, totalPrice: productPrice });
+    this.setState(state => ({
+      ...state,
+      totalOrderPrice,
+      ...updatedBucketArr,
+    }));
+    this.updateBucket(updatedBucketArr.bucketItems);
+  };
+
+  isClearBucketModal = () => {
+    const nextState = !this.state.clearBucketModal;
+    this.setState({ clearBucketModal: nextState });
+  };
+
+  onDeleteItemHandler = (productId) => {
+    const { totalOrderPrice, bucketItems } = this.state;
+    const deletedItemPrice = bucketItems[productId].totalPrice;
+    delete bucketItems[productId];
+    const updatedBucket = Object.values(bucketItems).reduce(
+      (acc, curVal, index) => ({
+        ...acc,
+        [index]: {
+          ...curVal,
+        },
+      }),
+      {},
+    );
+    const newPrice = (+totalOrderPrice - +deletedItemPrice).toFixed(2);
+
+    this.setState({
+      ...this.state,
+      bucketItems: updatedBucket,
+      totalOrderPrice: newPrice,
+    });
+    this.updateBucket(updatedBucket);
+  };
+
+  payHandler = () => {
+    const { currentCheckedTable } = this.state;
+
+    const { updateBucket, updateTable } = this.props;
+    updateBucket({ table_id: currentCheckedTable });
+    updateTable({ isSuccess: false });
+    const { navigation } = this.props;
+    navigation.navigate('StripeScreen');
+  };
+
+  closeTableModal = () => {
+    const { updateTable } = this.props;
+    updateTable({ isSuccess: false });
+  };
+
+  onClearTray = () => {
+    this.setState({
+      totalOrderPrice: 0,
+      bucketItems: {},
+    });
+
+    this.updateBucket({});
+  };
+
+
+  renderBucket = () => {
+    const {
+      bucket, bucketInfo, isRequested, tables, isSuccess, isReorder, barName, isBucketReq, symbol,
+    } = this.props;
+    const {
+      totalOrderPrice,
+      bucketItems,
+      currentCheckedTable,
+      currentTableName,
+      isEditable,
+      addNoteModal,
+      productNote,
+      editProductId,
+    } = this.state;
+    const payTables = tables.map(item => ({
+      ...item,
+      onPay: () => this.payHandler(item),
+    }));
+    const isDisabled = currentCheckedTable === -1;
+    return (
+      <Header
+        canGoBack
+        text
+        isEdit={!isEditable}
+        title={isReorder ? 'Reorder' : 'Tray'}
+        onEdit={this.onEdit}
+        editRightText="Done"
+      >
+        <LoadingModal loading={isRequested || isBucketReq} />
+        <AddNoteModal
+          productNote={productNote}
+          onClose={() => this.setState({ addNoteModal: false })}
+          onAddNote={this.onAddNoteHandler}
+          value={addNoteModal}
+          saveText={editProductId !== -1 ? bucket[editProductId].note : ''}
+        />
+        <TableModal
+          barName={barName}
+          isReorder={isReorder}
+          isDisabled={isDisabled}
+          currentCheckedTable={currentCheckedTable}
+          onCheck={this.tableCheckHandler}
+          onPay={this.payHandler}
+          closeModal={this.closeTableModal}
+          value={isSuccess}
+          tables={payTables}
+        />
+        <Description style={{ padding: 15 }} title={barName} />
+        <View style={{ backgroundColor: '#fff', flex: 1 }}>
+          {!!this.state.bucketItems && (
+            <OrderList
+              symbol={symbol}
+              isEditable={isEditable}
+              onDeleteItem={this.onDeleteItemHandler}
+              orders={Object.values(bucketItems)}
+              onAddNote={this.onShowEditModal}
+              onCounter={this.itemCounterHandler}
+            />
+          )}
+        </View>
+        <BottomMenu
+          symbol={symbol}
+          isReorder={isReorder}
+          isDissabled={bucketInfo.isOpen}
+          onPay={this.chooseTableHandler}
+          tableId={currentCheckedTable}
+          name={currentTableName}
+          totalOrderPrice={totalOrderPrice}
+          onPress={this.chooseTableHandler}
+          isEditable={isEditable}
+          onClearTray={this.onClearTray}
+        />
+      </Header>
+    );
+  };
+
+  render() {
+    const { bucket, navigation } = this.props;
+    return bucket.length === 0 ? <EmptyBucket onPress={() => navigation.navigate('Home')} /> : this.renderBucket();
+  }
+}
+
+const mapStateToProps = state => ({
+  symbol: state.bucket.symbol,
+  isRequested: state.tables.isRequested,
+  isBucketReq: state.bucket.isRequested,
+  tables: state.tables.tables,
+  bucketInfo: state.bucket,
+  barName: state.bucket.barName,
+  bucket: state.bucket.listOfProducts,
+  vendorId: state.bucket.sourceId,
+  isReorder: state.bucket.isReorder,
+  isSuccess: state.tables.isSuccess,
+  isChanged: state.bucket.isChanged,
+  isProductListFocuse: state.vendorsInfo.isProductListFocuse,
+});
+
+const mapDispatchToProps = {
+  clearBucket: clearAction,
+  updateBucket: updateAction,
+  getTables: getTablesAction,
+  makeOrder: makeOrderAction,
+  updateTable: updateTableAction,
+  checkVenueOpening: venueStatusAction,
+};
+
+export default connect(
+  mapStateToProps,
+  mapDispatchToProps,
+)(BucketScreen);
